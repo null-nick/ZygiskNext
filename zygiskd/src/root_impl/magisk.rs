@@ -104,7 +104,9 @@ pub fn uid_should_umount(uid: i32) -> bool {
 pub fn uid_is_manager(uid: i32) -> bool {
     let output = Command::new("magisk")
         .arg("--sqlite")
-        .arg(format!("select value from strings where key=\"requester\" limit 1"))
+        .arg(format!(
+            "select value from strings where key=\"requester\" limit 1"
+        ))
         .stdout(Stdio::piped())
         .spawn()
         .ok()

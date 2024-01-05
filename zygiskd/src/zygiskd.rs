@@ -2,23 +2,22 @@ use crate::constants::{DaemonSocketAction, ProcessFlags};
 use crate::utils::{check_unix_socket, UnixStreamExt};
 use crate::{constants, dl, lp_select, root_impl, utils};
 use anyhow::{bail, Result};
+use log::{debug, error, info, trace, warn};
 use passfd::FdPassingExt;
-use std::sync::{Arc, Mutex};
-use std::thread;
+use rustix::fs::{fcntl_setfd, FdFlags};
 use std::fs;
 use std::io::Error;
-use std::os::fd::{OwnedFd, RawFd};
+use std::ops::Deref;
+use std::os::fd::{AsFd, OwnedFd, RawFd};
+use std::os::unix::process::CommandExt;
 use std::os::unix::{
     net::{UnixListener, UnixStream},
     prelude::AsRawFd,
 };
 use std::path::PathBuf;
-use std::process::{Command, exit};
-use log::info;
-use std::os::unix::process::CommandExt;
-use bitflags::Flags;
-
-type ZygiskCompanionEntryFn = unsafe extern "C" fn(i32);
+use std::process::{exit, Command};
+use std::sync::{Arc, Mutex};
+use std::thread;
 
 struct Module {
     name: String,
@@ -30,11 +29,20 @@ struct Context {
     modules: Vec<Module>,
 }
 
+static MAGIC_PATH: LateInit<String> = LateInit::new();
+static CONTROLLER_SOCKET: LateInit<String> = LateInit::new();
+static PATH_CP_NAME: LateInit<String> = LateInit::new();
+
 pub fn main() -> Result<()> {
-    log::info!("Welcome to Zygisk Next ({}) !", constants::ZKSU_VERSION);
-    let magic_path = std::env::var("MAGIC")?;
-    let controller_path = format!("init_monitor{}", magic_path);
-    log::info!("socket path {}", controller_path);
+    info!("Welcome to Zygisk Next ({}) !", constants::ZKSU_VERSION);
+
+    MAGIC_PATH.init(std::env::var("MAGIC")?);
+    CONTROLLER_SOCKET.init(format!("{}/init_monitor", MAGIC_PATH.deref()));
+    PATH_CP_NAME.init(format!(
+        "{}/{}",
+        MAGIC_PATH.deref(),
+        lp_select!("/cp32.sock", "/cp64.sock")
+    ));
 
     let arch = get_arch()?;
     log::debug!("Daemon architecture: {arch}");
@@ -45,9 +53,13 @@ pub fn main() -> Result<()> {
         let info = match root_impl::get_impl() {
             root_impl::RootImpl::KernelSU | root_impl::RootImpl::APatch | root_impl::RootImpl::Magisk => {
                 msg.extend_from_slice(&constants::DAEMON_SET_INFO.to_le_bytes());
-                let module_names: Vec<_> = modules.iter()
-                    .map(|m| m.name.as_str()).collect();
-                format!("Root: {:?},module({}): {}", root_impl::get_impl(), modules.len(), module_names.join(","))
+                let module_names: Vec<_> = modules.iter().map(|m| m.name.as_str()).collect();
+                format!(
+                    "Root: {:?},module({}): {}",
+                    root_impl::get_impl(),
+                    modules.len(),
+                    module_names.join(",")
+                )
             }
             _ => {
                 msg.extend_from_slice(&constants::DAEMON_SET_ERROR_INFO.to_le_bytes());
@@ -57,12 +69,11 @@ pub fn main() -> Result<()> {
         msg.extend_from_slice(&(info.len() as u32 + 1).to_le_bytes());
         msg.extend_from_slice(info.as_bytes());
         msg.extend_from_slice(&[0u8]);
-        utils::unix_datagram_sendto_abstract(controller_path.as_str(), msg.as_slice()).expect("failed to send info");
+        utils::unix_datagram_sendto(&CONTROLLER_SOCKET, msg.as_slice())
+            .expect("failed to send info");
     }
 
-    let context = Context {
-        modules,
-    };
+    let context = Context { modules };
     let context = Arc::new(context);
     let listener = create_daemon_socket()?;
     for stream in listener.incoming() {
@@ -133,7 +144,11 @@ fn load_modules(arch: &str) -> Result<Vec<Module>> {
             }
         };
         let companion = Mutex::new(None);
-        let module = Module { name, lib_fd, companion };
+        let module = Module {
+            name,
+            lib_fd,
+            companion,
+        };
         modules.push(module);
     }
 
@@ -207,19 +222,21 @@ fn spawn_companion(name: &str, lib_fd: RawFd) -> Result<Option<UnixStream>> {
     exit(0)
 }
 
-fn handle_daemon_action(action: DaemonSocketAction, mut stream: UnixStream, context: &Context) -> Result<()> {
+fn handle_daemon_action(
+    action: DaemonSocketAction,
+    mut stream: UnixStream,
+    context: &Context,
+) -> Result<()> {
     match action {
-        DaemonSocketAction::RequestLogcatFd => {
-            loop {
-                let level = match stream.read_u8() {
-                    Ok(level) => level,
-                    Err(_) => break,
-                };
-                let tag = stream.read_string()?;
-                let message = stream.read_string()?;
-                utils::log_raw(level as i32, &tag, &message)?;
-            }
-        }
+        DaemonSocketAction::RequestLogcatFd => loop {
+            let level = match stream.read_u8() {
+                Ok(level) => level,
+                Err(_) => break,
+            };
+            let tag = stream.read_string()?;
+            let message = stream.read_string()?;
+            utils::log_raw(level as i32, &tag, &message)?;
+        },
         DaemonSocketAction::GetProcessFlags => {
             let uid = stream.read_u32()? as i32;
             let mut flags = ProcessFlags::empty();
@@ -239,8 +256,16 @@ fn handle_daemon_action(action: DaemonSocketAction, mut stream: UnixStream, cont
                 root_impl::RootImpl::Magisk => flags |= ProcessFlags::PROCESS_ROOT_IS_MAGISK,
                 _ => panic!("wrong root impl: {:?}", root_impl::get_impl()),
             }
-            log::trace!("Uid {} granted root: {}", uid, flags.contains(ProcessFlags::PROCESS_GRANTED_ROOT));
-            log::trace!("Uid {} on denylist: {}", uid, flags.contains(ProcessFlags::PROCESS_ON_DENYLIST));
+            trace!(
+                "Uid {} granted root: {}",
+                uid,
+                flags.contains(ProcessFlags::PROCESS_GRANTED_ROOT)
+            );
+            trace!(
+                "Uid {} on denylist: {}",
+                uid,
+                flags.contains(ProcessFlags::PROCESS_ON_DENYLIST)
+            );
             stream.write_u32(flags.bits())?;
         }
         DaemonSocketAction::ReadModules => {
@@ -266,7 +291,10 @@ fn handle_daemon_action(action: DaemonSocketAction, mut stream: UnixStream, cont
                         if c.is_some() {
                             log::trace!("  Spawned companion for `{}`", module.name);
                         } else {
-                            log::trace!("  No companion spawned for `{}` because it has not entry", module.name);
+                            trace!(
+                                "  No companion spawned for `{}` because it has not entry",
+                                module.name
+                            );
                         }
                         *companion = Some(c);
                     },
@@ -278,7 +306,10 @@ fn handle_daemon_action(action: DaemonSocketAction, mut stream: UnixStream, cont
             match companion.as_ref() {
                 Some(Some(sock)) => {
                     if let Err(e) = sock.send_fd(stream.as_raw_fd()) {
-                        log::error!("Failed to send companion fd socket of module `{}`: {}", module.name, e);
+                        error!(
+                            "Failed to send companion fd socket of module `{}`: {}",
+                            module.name, e
+                        );
                         stream.write_u8(0)?;
                     }
                     // Ok: Send by companion

@@ -109,7 +109,6 @@ androidComponents.onVariants { variant ->
                         .putLong(real.length())
                         .array()
                     sig.update(buffer)
-                    println("sha $path ${real.length()}")
                     real.forEachBlock { bytes, size ->
                         sig.update(bytes, 0, size)
                     }

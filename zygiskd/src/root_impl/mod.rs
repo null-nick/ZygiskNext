@@ -43,7 +43,9 @@ pub fn setup() {
             }
         }
     };
-    unsafe { ROOT_IMPL = impl_; }
+    unsafe {
+        ROOT_IMPL = impl_;
+    }
 }
 
 pub fn get_impl() -> &'static RootImpl {
