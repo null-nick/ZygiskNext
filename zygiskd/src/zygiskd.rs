@@ -1,5 +1,5 @@
 use crate::constants::{DaemonSocketAction, ProcessFlags};
-use crate::utils::{check_unix_socket, LateInit, UnixStreamExt};
+use crate::utils::{check_unix_socket, UnixStreamExt};
 use crate::{constants, lp_select, root_impl, utils};
 use anyhow::{bail, Result};
 use log::{debug, error, info, trace, warn};
@@ -7,7 +7,6 @@ use passfd::FdPassingExt;
 use rustix::fs::{fcntl_setfd, FdFlags};
 use std::fs;
 use std::io::Error;
-use std::ops::Deref;
 use std::os::fd::{AsFd, OwnedFd, RawFd};
 use std::os::unix::process::CommandExt;
 use std::os::unix::{
@@ -29,20 +28,11 @@ struct Context {
     modules: Vec<Module>,
 }
 
-static PATH_MAGIC: LateInit<String> = LateInit::new();
-static CONTROLLER_SOCKET: LateInit<String> = LateInit::new();
-static PATH_CP_NAME: LateInit<String> = LateInit::new();
-
 pub fn main() -> Result<()> {
     info!("Welcome to Zygisk Next ({}) !", constants::ZKSU_VERSION);
-
-    PATH_MAGIC.init(std::env::var("MAGIC_PATH")?);
-    CONTROLLER_SOCKET.init(format!("{}/init_monitor", PATH_MAGIC.deref()));
-    PATH_CP_NAME.init(format!(
-        "{}/{}",
-        PATH_MAGIC.deref(),
-        lp_select!("/cp32.sock", "/cp64.sock")
-    ));
+    let magic_path = std::env::var("MAGIC")?;
+    let controller_path = format!("init_monitor{}", magic_path);
+    info!("socket path {}", controller_path);
 
     let arch = get_arch()?;
     debug!("Daemon architecture: {arch}");
@@ -69,7 +59,7 @@ pub fn main() -> Result<()> {
         msg.extend_from_slice(&(info.len() as u32 + 1).to_le_bytes());
         msg.extend_from_slice(info.as_bytes());
         msg.extend_from_slice(&[0u8]);
-        utils::unix_datagram_sendto(&CONTROLLER_SOCKET, msg.as_slice())
+        utils::unix_datagram_sendto(controller_path.as_str(), msg.as_slice())
             .expect("failed to send info");
     }
 
@@ -85,7 +75,7 @@ pub fn main() -> Result<()> {
         match action {
             DaemonSocketAction::PingHeartbeat => {
                 let value = constants::ZYGOTE_INJECTED;
-                utils::unix_datagram_sendto(&CONTROLLER_SOCKET.as_str(), &value.to_le_bytes())?;
+                utils::unix_datagram_sendto(controller_path.as_str(), &value.to_le_bytes())?;
             }
             DaemonSocketAction::ZygoteRestart => {
                 info!("Zygote restarted, clean up companions");
@@ -176,7 +166,7 @@ fn create_library_fd(so_path: &PathBuf) -> Result<OwnedFd> {
 fn create_daemon_socket() -> Result<UnixListener> {
     utils::set_socket_create_context("u:r:zygote:s0")?;
     let magic_path = std::env::var("MAGIC_PATH")?;
-    let socket_path = magic_path + &PATH_CP_NAME;
+    let socket_path = magic_path + constants::PATH_CP_NAME;
     debug!("Daemon socket: {}", socket_path);
     let listener = utils::unix_listener_from_path(&socket_path)?;
     Ok(listener)

@@ -16,6 +16,7 @@ pub const MAX_LOG_LEVEL: LevelFilter = LevelFilter::Trace;
 #[cfg(not(debug_assertions))]
 pub const MAX_LOG_LEVEL: LevelFilter = LevelFilter::Info;
 
+pub const PATH_CP_NAME: &str = lp_select!("/cp32.sock", "/cp64.sock");
 pub const PATH_MODULES_DIR: &str = "..";
 pub const ZYGOTE_INJECTED: i32 = lp_select!(5, 4);
 pub const DAEMON_SET_INFO: i32 = lp_select!(7, 6);
