@@ -1,6 +1,6 @@
 use crate::constants::{DaemonSocketAction, ProcessFlags};
-use crate::utils::{check_unix_socket, UnixStreamExt};
-use crate::{constants, dl, lp_select, root_impl, utils};
+use crate::utils::{check_unix_socket, LateInit, UnixStreamExt};
+use crate::{constants, lp_select, root_impl, utils};
 use anyhow::{bail, Result};
 use log::{debug, error, info, trace, warn};
 use passfd::FdPassingExt;
@@ -45,7 +45,7 @@ pub fn main() -> Result<()> {
     ));
 
     let arch = get_arch()?;
-    log::debug!("Daemon architecture: {arch}");
+    debug!("Daemon architecture: {arch}");
     let modules = load_modules(arch)?;
 
     {
@@ -81,11 +81,11 @@ pub fn main() -> Result<()> {
         let context = Arc::clone(&context);
         let action = stream.read_u8()?;
         let action = DaemonSocketAction::try_from(action)?;
-        log::trace!("New daemon action {:?}", action);
+        trace!("New daemon action {:?}", action);
         match action {
             DaemonSocketAction::PingHeartbeat => {
                 let value = constants::ZYGOTE_INJECTED;
-                utils::unix_datagram_sendto_abstract(controller_path.as_str(), &value.to_le_bytes())?;
+                utils::unix_datagram_sendto(&CONTROLLER_SOCKET.as_str(), &value.to_le_bytes())?;
             }
             DaemonSocketAction::ZygoteRestart => {
                 info!("Zygote restarted, clean up companions");
@@ -94,10 +94,14 @@ pub fn main() -> Result<()> {
                     companion.take();
                 }
             }
+            DaemonSocketAction::SystemServerStarted => {
+                let value = constants::SYSTEM_SERVER_STARTED;
+                utils::unix_datagram_sendto(&CONTROLLER_SOCKET, &value.to_le_bytes())?;
+            }
             _ => {
                 thread::spawn(move || {
                     if let Err(e) = handle_daemon_action(action, stream, &context) {
-                        log::warn!("Error handling daemon action: {}\n{}", e, e.backtrace());
+                        warn!("Error handling daemon action: {}\n{}", e, e.backtrace());
                     }
                 });
             }
@@ -123,7 +127,7 @@ fn load_modules(arch: &str) -> Result<Vec<Module>> {
     let dir = match fs::read_dir(constants::PATH_MODULES_DIR) {
         Ok(dir) => dir,
         Err(e) => {
-            log::warn!("Failed reading modules directory: {}", e);
+            warn!("Failed reading modules directory: {}", e);
             return Ok(modules);
         }
     };
@@ -135,11 +139,11 @@ fn load_modules(arch: &str) -> Result<Vec<Module>> {
         if !so_path.exists() || disabled.exists() {
             continue;
         }
-        log::info!("  Loading module `{name}`...");
+        info!("  Loading module `{name}`...");
         let lib_fd = match create_library_fd(&so_path) {
             Ok(fd) => fd,
             Err(e) => {
-                log::warn!("  Failed to create memfd for `{name}`: {e}");
+                warn!("  Failed to create memfd for `{name}`: {e}");
                 continue;
             }
         };
@@ -176,8 +180,8 @@ fn create_library_fd(so_path: &PathBuf) -> Result<OwnedFd> {
 fn create_daemon_socket() -> Result<UnixListener> {
     utils::set_socket_create_context("u:r:zygote:s0")?;
     let magic_path = std::env::var("MAGIC_PATH")?;
-    let socket_path = magic_path + constants::PATH_CP_NAME;
-    log::debug!("Daemon socket: {}", socket_path);
+    let socket_path = magic_path + &PATH_CP_NAME;
+    debug!("Daemon socket: {}", socket_path);
     let listener = utils::unix_listener_from_path(&socket_path)?;
     Ok(listener)
 }
@@ -210,7 +214,7 @@ fn spawn_companion(name: &str, lib_fd: RawFd) -> Result<Option<UnixStream>> {
             }
         } else {
             // Remove FD_CLOEXEC flag
-            unsafe { libc::fcntl(companion.as_raw_fd() as libc::c_int, libc::F_SETFD, 0i32); };
+            fcntl_setfd(companion.as_fd(), FdFlags::empty())?;
         }
     }
 
@@ -289,7 +293,7 @@ fn handle_daemon_action(
                 match spawn_companion(&module.name, module.lib_fd.as_raw_fd()) {
                     Ok(c) => {
                         if c.is_some() {
-                            log::trace!("  Spawned companion for `{}`", module.name);
+                            trace!("  Spawned companion for `{}`", module.name);
                         } else {
                             trace!(
                                 "  No companion spawned for `{}` because it has not entry",
@@ -299,7 +303,7 @@ fn handle_daemon_action(
                         *companion = Some(c);
                     },
                     Err(e) => {
-                        log::warn!("  Failed to spawn companion for `{}`: {}", module.name, e);
+                        warn!("  Failed to spawn companion for `{}`: {}", module.name, e);
                     }
                 };
             }

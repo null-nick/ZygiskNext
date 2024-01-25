@@ -18,6 +18,7 @@ pub const MAX_LOG_LEVEL: LevelFilter = LevelFilter::Info;
 
 pub const PATH_MODULES_DIR: &str = "..";
 pub const ZYGOTE_INJECTED: i32 = lp_select!(5, 4);
+pub const SYSTEM_SERVER_STARTED: i32 = 10;
 pub const DAEMON_SET_INFO: i32 = lp_select!(7, 6);
 pub const DAEMON_SET_ERROR_INFO: i32 = lp_select!(9, 8);
 
@@ -31,6 +32,7 @@ pub enum DaemonSocketAction {
     RequestCompanionSocket,
     GetModuleDir,
     ZygoteRestart,
+    SystemServerStarted,
 }
 
 // Zygisk process flags

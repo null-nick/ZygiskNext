@@ -177,7 +177,7 @@ struct SocketHandler : public EventHandler {
                 LOGE("read %zu < %zu", nread, sizeof(Command));
                 continue;
             }
-            if (msg.cmd >= Command::DAEMON64_SET_INFO) {
+            if (msg.cmd >= Command::DAEMON64_SET_INFO && msg.cmd != Command::SYSTEM_SERVER_STARTED) {
                 if (nread != sizeof(msg)) {
                     LOGE("cmd %d size %zu != %zu", msg.cmd, nread, sizeof(MsgHead));
                     continue;
@@ -259,6 +259,12 @@ struct SocketHandler : public EventHandler {
                     status32.daemon_running = false;
                     status32.daemon_error_info = std::string(msg.data);
                     updateStatus();
+                    break;
+                case SYSTEM_SERVER_STARTED:
+                    LOGD("system server started, mounting prop");
+                    if (mount(prop_path.c_str(), "/data/adb/modules/zygisksu/module.prop", nullptr, MS_BIND, nullptr) == -1) {
+                        PLOGE("failed to mount prop");
+                    }
                     break;
             }
         }
