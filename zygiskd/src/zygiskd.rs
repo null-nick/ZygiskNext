@@ -29,18 +29,18 @@ struct Context {
     modules: Vec<Module>,
 }
 
-static MAGIC_PATH: LateInit<String> = LateInit::new();
+static PATH_MAGIC: LateInit<String> = LateInit::new();
 static CONTROLLER_SOCKET: LateInit<String> = LateInit::new();
 static PATH_CP_NAME: LateInit<String> = LateInit::new();
 
 pub fn main() -> Result<()> {
     info!("Welcome to Zygisk Next ({}) !", constants::ZKSU_VERSION);
 
-    MAGIC_PATH.init(std::env::var("MAGIC")?);
-    CONTROLLER_SOCKET.init(format!("{}/init_monitor", MAGIC_PATH.deref()));
+    PATH_MAGIC.init(std::env::var("MAGIC_PATH")?);
+    CONTROLLER_SOCKET.init(format!("{}/init_monitor", PATH_MAGIC.deref()));
     PATH_CP_NAME.init(format!(
         "{}/{}",
-        MAGIC_PATH.deref(),
+        PATH_MAGIC.deref(),
         lp_select!("/cp32.sock", "/cp64.sock")
     ));
 
