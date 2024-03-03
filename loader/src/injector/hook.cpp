@@ -144,10 +144,8 @@ DCL_HOOK_FUNC(int, unshare, int flags) {
         // Simply avoid doing any unmounts for SysUI to avoid potential issues.
         (g_ctx->info_flags & PROCESS_IS_SYS_UI) == 0) {
         if (g_ctx->flags[DO_REVERT_UNMOUNT]) {
-            if (g_ctx->info_flags & PROCESS_ROOT_IS_KSU) {
-                revert_unmount_ksu();
-            } else if (g_ctx->info_flags & PROCESS_ROOT_IS_APATCH) {
-                revert_unmount_apatch();
+            if (g_ctx->info_flags & PROCESS_ROOT_IS_KSU || g_ctx->info_flags & PROCESS_ROOT_IS_APATCH) {
+                revert_unmount_ksu_apatch();
             } else if (g_ctx->info_flags & PROCESS_ROOT_IS_MAGISK) {
                 revert_unmount_magisk();
             }

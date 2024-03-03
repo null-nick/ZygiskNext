@@ -8,8 +8,6 @@ extern void *self_handle;
 
 void hook_functions();
 
-void revert_unmount_ksu();
-
-void revert_unmount_apatch();
+void revert_unmount_ksu_apatch();
 
 void revert_unmount_magisk();
